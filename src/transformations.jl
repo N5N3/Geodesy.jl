@@ -45,7 +45,7 @@ end
 LLAfromECEF(datum::Datum) = LLAfromECEF(ellipsoid(datum))
 
 
- function (trans::LLAfromECEF)(ecef::ECEF)
+function (trans::LLAfromECEF)(ecef::ECEF)
     # Ported to Julia by Andy Ferris, 2016 and re-released under MIT license.
     #/**
     # * \file Geocentric.cpp
@@ -56,22 +56,22 @@ LLAfromECEF(datum::Datum) = LLAfromECEF(ellipsoid(datum))
     # * http://geographiclib.sourceforge.net/
     # **********************************************************************/
     R = hypot(ecef.x, ecef.y)
-    if R == 0
-        slam = 0.0
-        clam = 1.0
+    if iszero(R)
+        slam = zero(R)
+        clam = one(R)
     else
         slam = ecef.y / R
         clam = ecef.x / R
     end
     h = hypot(R, ecef.z)    # Distance to center of earth
 
-    if (trans.e4a == 0)
+    if iszero(trans.e4a)
         # Treat the spherical case.  Dealing with underflow in the general case
         # with _e2 = 0 is difficult.  Origin maps to north pole, same as the
         # ellipsoidal case below
-        if h == 0
-            sphi = 1.0
-            cphi = 0.0
+        if iszero(h)
+            sphi = one(h)
+            cphi = zero(h)
         else
             sphi = ecef.z / h
             cphi = R / h
@@ -80,54 +80,52 @@ LLAfromECEF(datum::Datum) = LLAfromECEF(ellipsoid(datum))
     else # Ellipsoidal
         # Treat prolate spheroids by swapping r and z here and by switching
         # the arguments to phi = atan(...) at the end.
-        p = (R / trans.a) * (R / trans.a)
-        q = trans.e2m * (ecef.z / trans.a) * (ecef.z / trans.a)
+        p = (R / trans.a)^2
+        q = trans.e2m * (ecef.z / trans.a)^2
         r = (p + q - trans.e4a) / 6
-        if (trans.f < 0)
-            tmp = p
-            p = q
-            q = tmp
+        if trans.f < 0
+            p, q = q, p
         end
 
 
-        if ( !(trans.e4a * q == 0 && r <= 0) )
+        if !(iszero(trans.e4a * q) && r <= 0)
 
             # Avoid possible division by zero when r = 0 by multiplying
             # equations for s and t by r^3 and r, resp.
             S = trans.e4a * p * q / 4 # S = r^3 * s
             r2 = r * r
             r3 = r * r2
-            disc = S * (2 * r3 + S)
+            disc = S * (2r3 + S)
             u = r
-            if (disc >= 0)
+            if disc >= 0
                 T3 = S + r3
                 # Pick the sign on the sqrt to maximize abs(T3).  This minimizes
                 # loss of precision due to cancellation.  The result is unchanged
                 # because of the way the T is used in definition of u.
-                T3 += (T3 < 0 ? -sqrt(disc) : sqrt(disc)) # T3 = (r * t)^3
+                T3 += flipsign(sqrt(disc), T3) # T3 = (r * t)^3
                 # N.B. cbrt always returns the real root.  cbrt(-8) = -2.
                 T = cbrt(T3) # T = r * t
                 # T can be zero; but then r2 / T -> 0.
-                u += T + (T != 0 ? r2 / T : 0.0)
+                u = iszero(T) ? u : u + T + r2 / T
             else
                 # T is complex, but the way u is defined the result is real.
                 ang = atan(sqrt(-disc), -(S + r3))
                 # There are three possible cube roots.  We choose the root which
                 # avoids cancellation.  Note that disc < 0 implies that r < 0.
-                u += 2 * r * cos(ang / 3)
+                u += 2r * cos(ang / 3)
             end
 
-            v = sqrt(u*u + trans.e4a * q) # guaranteed positive
+            v = sqrt(u^2 + trans.e4a * q) # guaranteed positive
             # Avoid loss of accuracy when u < 0.  Underflow doesn't occur in
             # e4 * q / (v - u) because u ~ e^4 when q is small and u < 0.
-            uv = (u < 0 ? trans.e4a * q / (v - u) : u + v) # u+v, guaranteed positive
+            uv = u < 0 ? trans.e4a * q / (v - u) : u + v # u+v, guaranteed positive
             # Need to guard against w going negative due to roundoff in uv - q.
-            w = max(0.0, trans.e2a * (uv - q) / (2 * v))
+            w = max(0.0, trans.e2a * (uv - q) / 2v)
             # Rearrange expression for k to avoid loss of accuracy due to
             # subtraction.  Division by 0 not possible because uv > 0, w >= 0.
             k = uv / (sqrt(uv + w*w) + w)
-            k1 = (trans.f >= 0 ? k : k - trans.e2)
-            k2 = (trans.f >= 0 ? k + trans.e2 : k)
+            k1 = trans.f >= 0 ? k : k - trans.e2
+            k2 = trans.f >= 0 ? k + trans.e2 : k
             d = k1 * R / k2
             H = hypot(ecef.z/k1, R/k2)
             sphi = (ecef.z/k1) / H
@@ -143,16 +141,13 @@ LLAfromECEF(datum::Datum) = LLAfromECEF(ellipsoid(datum))
             zz = sqrt((trans.f >= 0 ? trans.e4a - p : p) / trans.e2m)
             xx = sqrt( trans.f <  0 ? trans.e4a - p : p)
             H = hypot(zz, xx)
-            sphi = zz / H
+            sphi = flipsign(zz / H, ecef.z) # for tiny negative Z (not for prolate)
             cphi = xx / H
-            if (ecef.z < 0)
-                sphi = -sphi # for tiny negative Z (not for prolate)
-            end
-            h = - trans.a * (trans.f >= 0 ? trans.e2m : 1.0) * H / trans.e2a
+            h = - (trans.f >= 0 ? trans.a * trans.e2m : trans.a) * H / trans.e2a
         end
     end
-    lat = 180 * atan(sphi, cphi) / pi
-    lon = 180 * atan(slam, clam) / pi
+    lat = atand(sphi, cphi)
+    lon = atand(slam, clam)
 
     return LLA(lat, lon, h)
 end
